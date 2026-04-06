@@ -1,3 +1,4 @@
+import importlib
 import json
 import os
 from copy import deepcopy
@@ -112,10 +113,10 @@ class ConfigManager:
         return merged_config
 
     @staticmethod
-    def from_model_path(model_path: str) -> "ConfigManager":
-        """
-        Load the configuration from the model path.
-        """
+    def from_model_path(
+        model_path: str, variant: str | None = None
+    ) -> "ConfigManager":
+        """Load config from model path, optionally selecting a variant."""
         arch = None
 
         # 1) Try HuggingFace config.json
@@ -136,6 +137,17 @@ class ConfigManager:
             )
 
         config_cls = PIPELINE_CONFIG_REGISTRY.get_config(arch)
+
+        if variant:
+            module = importlib.import_module(config_cls.__module__)
+            variants = getattr(module, "Variants", None)
+            if variants and variant in variants:
+                config_cls = variants[variant]
+            else:
+                raise ValueError(
+                    f"Unknown variant '{variant}' for {config_cls.__name__}"
+                )
+
         config = config_cls(model_path=model_path)
         return ConfigManager(config)
 
