@@ -91,6 +91,8 @@ class SampleOutput:
     target_text: str
     hypothesis: str = ""
     wer: float = 0.0
+    edit_distance: int = 0
+    ref_length: int = 0
     latency: float = 0.0
     audio_duration: float = 0.0
     error: str = ""
@@ -303,8 +305,14 @@ def transcribe(
 # ---------------------------------------------------------------------------
 
 
-def compute_wer(reference: str, hypothesis: str, lang: str = "en") -> float:
-    """Compute Word Error Rate between reference and hypothesis."""
+def compute_wer(
+    reference: str, hypothesis: str, lang: str = "en"
+) -> tuple[float, int, int]:
+    """Compute Word Error Rate between reference and hypothesis.
+
+    Returns:
+        (wer, edit_distance, ref_length) where wer = edit_distance / ref_length.
+    """
     ref = normalize_text(reference, lang)
     hyp = normalize_text(hypothesis, lang)
 
@@ -317,7 +325,7 @@ def compute_wer(reference: str, hypothesis: str, lang: str = "en") -> float:
         hyp_tokens = hyp.split()
 
     if not ref_tokens:
-        return 0.0 if not hyp_tokens else 1.0
+        return (0.0, 0, 0) if not hyp_tokens else (1.0, len(hyp_tokens), 0)
 
     # Levenshtein distance via dynamic programming
     n = len(ref_tokens)
@@ -340,7 +348,7 @@ def compute_wer(reference: str, hypothesis: str, lang: str = "en") -> float:
                     d[i - 1][j - 1] + 1,  # substitution
                 )
 
-    return d[n][m] / n
+    return d[n][m] / n, d[n][m], n
 
 
 # ---------------------------------------------------------------------------
@@ -417,10 +425,15 @@ def calculate_metrics(outputs: list[SampleOutput]) -> dict:
     latencies = [o.latency for o in successes]
     durations = [o.audio_duration for o in successes if o.audio_duration > 0]
 
+    # True micro-average (corpus-level) WER: total edits / total ref words
+    total_edits = sum(o.edit_distance for o in successes)
+    total_ref_len = sum(o.ref_length for o in successes)
+    corpus_wer = total_edits / total_ref_len if total_ref_len > 0 else 0.0
+
     return {
         "completed": len(successes),
         "failed": len(outputs) - len(successes),
-        "corpus_wer": round(float(np.mean(wers)), 4),
+        "corpus_wer": round(corpus_wer, 4),
         "wer_median": round(float(np.median(wers)), 4),
         "wer_std": round(float(np.std(wers)), 4),
         "wer_p95": round(float(np.percentile(wers, 95)), 4),
@@ -598,7 +611,9 @@ def benchmark(args: argparse.Namespace) -> None:
             output.hypothesis = hypothesis
 
             # Compute WER
-            output.wer = compute_wer(sample.target_text, hypothesis, args.lang)
+            output.wer, output.edit_distance, output.ref_length = compute_wer(
+                sample.target_text, hypothesis, args.lang
+            )
             output.is_success = True
 
             logger.info(
