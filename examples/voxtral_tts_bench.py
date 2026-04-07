@@ -165,9 +165,7 @@ async def run_streaming(
                     f"Request {batch_idx}: saved {len(full_audio)} samples "
                     f"({output_audio_dur:.2f}s) to {output_path}"
                 )
-            # Per-chunk details
-            if chunk_arrival_times:
-                first_arrival = chunk_arrival_times[0]
+            # Per-chunk details (first_arrival already set above)
             for i, label in enumerate(chunk_labels):
                 dur_ms = chunk_durations[i] * 1000
                 arrival_ms = (
