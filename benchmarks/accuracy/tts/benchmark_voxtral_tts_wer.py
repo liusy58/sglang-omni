@@ -571,7 +571,6 @@ def benchmark(args: argparse.Namespace) -> None:
 
         try:
             # Generate speech via API
-            t0 = time.time()
             wav_bytes, latency = generate_speech_via_api(
                 text=sample.target_text,
                 base_url=base_url,
