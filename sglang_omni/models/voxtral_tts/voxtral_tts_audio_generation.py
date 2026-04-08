@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Voxtral TTS audio generation model.
 
-Standalone implementation with an integrated LlamaModel backbone, the
-FlowMatchingAudioTransformer for acoustic code prediction, and
+Standalone pure-PyTorch implementation with an integrated LlamaModel backbone,
+the FlowMatchingAudioTransformer for acoustic code prediction, and
 MultiVocabEmbeddings for audio token embedding.
-
-This module is independent of vLLM.
 """
 
 import logging
@@ -17,7 +15,6 @@ from dataclasses import dataclass, fields, is_dataclass
 from typing import Union, get_args, get_origin
 
 import numpy as np
-import regex as re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -50,7 +47,7 @@ SUPPORTED_LANGS = {
 }
 
 
-# ---- Dataclasses (copied from vLLM) ----
+# ---- Dataclasses ----
 
 
 @dataclass
@@ -116,7 +113,7 @@ def from_nested_dict(cls, d):
     return cls(**kwargs)
 
 
-# ---- Acoustic Transformer components (copied from vLLM) ----
+# ---- Acoustic Transformer components ----
 
 
 def _repeat_interleave(t: torch.Tensor, repeats: int) -> torch.Tensor:
@@ -232,7 +229,7 @@ class TimeEmbedding(nn.Module):
         return torch.cat((emb.cos(), emb.sin()), dim=-1)
 
 
-# ---- MultiVocabEmbeddings (copied from vLLM audio_tokenizer) ----
+# ---- MultiVocabEmbeddings ----
 
 
 class MultiVocabEmbeddings(nn.Module):
@@ -253,14 +250,11 @@ class MultiVocabEmbeddings(nn.Module):
         return self.embeddings(input_ids)
 
 
-# ---- Standalone LLM: ported from vLLM's LlamaModel / LlamaDecoderLayer ----
-# Uses flash_attn_func for attention (same kernel as vLLM).
-# RMSNorm with fused residual pattern matches vLLM exactly.
-# RoPE uses the same cos_sin_cache approach as vLLM.
+# ---- Standalone LLM backbone ----
 
 
 class _RMSNorm(nn.Module):
-    """RMSNorm matching vLLM's implementation, with optional fused residual add."""
+    """RMSNorm with optional fused residual add."""
 
     def __init__(self, hidden_size: int, eps: float = 1e-5):
         super().__init__()
@@ -278,7 +272,7 @@ class _RMSNorm(nn.Module):
 
 
 class _RotaryEmbedding(nn.Module):
-    """Neox-style rotary embeddings matching vLLM's RotaryEmbedding exactly."""
+    """Neox-style rotary position embeddings with precomputed cos/sin cache."""
 
     def __init__(
         self,
@@ -325,7 +319,7 @@ class _RotaryEmbedding(nn.Module):
 
 
 class _LlamaAttention(nn.Module):
-    """Attention layer matching vLLM's LlamaAttention, using PyTorch SDPA."""
+    """Llama-style attention layer using PyTorch SDPA with GQA support."""
 
     def __init__(
         self,
@@ -399,8 +393,7 @@ class _LlamaMLP(nn.Module):
 
 
 class _LlamaDecoderLayer(nn.Module):
-    """Decoder layer matching vLLM's LlamaDecoderLayer exactly:
-    fused residual + RMSNorm pattern, flash_attn attention."""
+    """Llama decoder layer with fused residual + RMSNorm pattern."""
 
     def __init__(
         self,
@@ -440,7 +433,7 @@ class _LlamaDecoderLayer(nn.Module):
 
 
 class _LlamaModel(nn.Module):
-    """Standalone LlamaModel matching vLLM's, with flash_attn."""
+    """Standalone LlamaModel with SDPA attention."""
 
     def __init__(
         self,
@@ -494,7 +487,7 @@ class _LlamaModel(nn.Module):
 class VoxtralTTSAudioGeneration(nn.Module):
     """Voxtral TTS generation model.
 
-    LLM backbone is a standalone LlamaModel ported from vLLM, using flash_attn.
+    LLM backbone is a standalone LlamaModel using PyTorch SDPA.
     """
 
     def __init__(self, text_config, audio_model_args: dict, embedding_dim: int):
@@ -549,11 +542,11 @@ class VoxtralTTSAudioGeneration(nn.Module):
         hidden, new_kvs = self.language_model(embeds, positions, past_key_values)
         return hidden.unsqueeze(0), new_kvs if use_cache else None
 
-    # ---- Per-layer debug (mirrors vLLM's _forward_with_layer_debug) ----
+    # ---- Per-layer debug ----
 
     @torch.no_grad()
     def _forward_with_layer_debug(self, inputs_embeds, positions):
-        """Manually iterate layers with per-layer logging, matching vLLM's debug.
+        """Manually iterate layers with per-layer logging.
         Also returns KV cache so decode steps can continue properly."""
         model = self.language_model
         hidden_states = inputs_embeds
@@ -573,7 +566,7 @@ class VoxtralTTSAudioGeneration(nn.Module):
 
         return hidden_states, new_kvs
 
-    # ---- Weight loading (mirrors vLLM's load_weights) ----
+    # ---- Weight loading ----
 
     _MISTRAL_TO_HF_RULES = [
         (
@@ -629,7 +622,7 @@ class VoxtralTTSAudioGeneration(nn.Module):
         """Load weights from Mistral-format safetensors checkpoint."""
         import glob
 
-        from sglang.srt.model_loader.weight_utils import safetensors_weights_iterator
+        from safetensors import safe_open
 
         safetensors_files = sorted(
             glob.glob(os.path.join(checkpoint_dir, "*.safetensors"))
@@ -647,37 +640,43 @@ class VoxtralTTSAudioGeneration(nn.Module):
         at_count = 0
         emb_loaded = False
 
-        for name, tensor in safetensors_weights_iterator(safetensors_files):
-            # LLM weights
-            hf_name = self._remap_mistral_to_hf(name)
-            if hf_name is not None:
-                if ".attention.wq." in name:
-                    tensor = self._permute_qk_weight(
-                        tensor, n_heads, head_dim, hidden_size
-                    )
-                elif ".attention.wk." in name:
-                    tensor = self._permute_qk_weight(
-                        tensor, n_kv_heads, head_dim, hidden_size
-                    )
-                llm_state[hf_name] = tensor
-                llm_count += 1
-                continue
+        for path in safetensors_files:
+            with safe_open(path, framework="pt", device="cpu") as f:
+                for name in f.keys():
+                    tensor = f.get_tensor(name)
 
-            # Acoustic transformer weights
-            if name.startswith("acoustic_transformer."):
-                short = name[len("acoustic_transformer."):]
-                self.acoustic_transformer.load_weight((short, tensor))
-                at_count += 1
-                continue
+                    # LLM weights
+                    hf_name = self._remap_mistral_to_hf(name)
+                    if hf_name is not None:
+                        if ".attention.wq." in name:
+                            tensor = self._permute_qk_weight(
+                                tensor, n_heads, head_dim, hidden_size
+                            )
+                        elif ".attention.wk." in name:
+                            tensor = self._permute_qk_weight(
+                                tensor, n_kv_heads, head_dim, hidden_size
+                            )
+                        llm_state[hf_name] = tensor
+                        llm_count += 1
+                        continue
 
-            # Audio token embedding weights
-            if (
-                name
-                == "mm_audio_embeddings.audio_codebook_embeddings.embeddings.weight"
-            ):
-                self.audio_token_embedding.embeddings.weight.data.copy_(tensor)
-                emb_loaded = True
-                continue
+                    # Acoustic transformer weights
+                    if name.startswith("acoustic_transformer."):
+                        short = name[len("acoustic_transformer."):]
+                        self.acoustic_transformer.load_weight((short, tensor))
+                        at_count += 1
+                        continue
+
+                    # Audio token embedding weights
+                    if (
+                        name
+                        == "mm_audio_embeddings.audio_codebook_embeddings.embeddings.weight"
+                    ):
+                        self.audio_token_embedding.embeddings.weight.data.copy_(
+                            tensor
+                        )
+                        emb_loaded = True
+                        continue
 
         missing, unexpected = self.language_model.load_state_dict(
             llm_state, strict=False
