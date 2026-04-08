@@ -156,7 +156,8 @@ def from_nested_dict(cls, d):
         origin = get_origin(field_type)
         if origin is Union:
             args = get_args(field_type)
-            non_none = [a for a in args if a is not type(None)]
+            # Filter out NoneType from Union args (e.g. Optional[X] = Union[X, None])
+            non_none = [a for a in args if a is not type(None)]  # noqa: E721
             if len(non_none) == 1:
                 field_type = non_none[0]
 
@@ -448,9 +449,11 @@ class FlowMatchingAudioTransformer(nn.Module):
             sampled = sampled + v_t * dt
 
         sampled = torch.clamp(sampled, -1, 1)
-        scaled_x = ((sampled + 1) / 2) * (self.acoustic_embeddings_levels - 1)
-        output_codes = scaled_x.round().long()
+        # Scale from [-1, 1] to [0, levels-1] for quantization
+        quantized_levels = ((sampled + 1) / 2) * (self.acoustic_embeddings_levels - 1)
+        output_codes = quantized_levels.round().long()
         output_codes[~should_decode] = self._empty_audio_token_id
+        # Offset by the number of special tokens to avoid ID conflicts
         return output_codes + len(AudioSpecialTokens)
 
     def _predict_velocity(
@@ -646,11 +649,10 @@ class VoxtralTTSAudioGeneration(nn.Module):
         self, hidden_states: torch.Tensor
     ) -> tuple[torch.Tensor, dict[str, list[torch.Tensor]] | None]:
         audio_codes = self.acoustic_transformer(llm_hidden=hidden_states)
-        fake_eos = torch.where(
-            audio_codes[:, 0] == AudioSpecialTokens.id(AudioSpecialTokens.end_audio),
-            torch.tensor(1.0, dtype=torch.bfloat16),
-            torch.tensor(0.0, dtype=torch.bfloat16),
+        is_end = (
+            audio_codes[:, 0] == AudioSpecialTokens.id(AudioSpecialTokens.end_audio)
         )
+        fake_eos = is_end.to(dtype=torch.bfloat16)
         audio_list = list(torch.split(audio_codes.unsqueeze(1), 1, dim=0))
         return fake_eos, {"audio": audio_list}
 
