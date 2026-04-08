@@ -553,16 +553,11 @@ class VoxtralTTSAudioGeneration(nn.Module):
         residual = None
         new_kvs = []
 
-        last = hidden_states[-1]
-
         for i, layer in enumerate(model.layers):
             hidden_states, residual, new_kv = layer(positions, hidden_states, residual)
             new_kvs.append(new_kv)
-            state = hidden_states + residual
-            last = state[-1]
 
         hidden_states, _ = model.norm(hidden_states, residual)
-        last = hidden_states[-1]
 
         return hidden_states, new_kvs
 
