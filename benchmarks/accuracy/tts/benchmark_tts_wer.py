@@ -49,6 +49,7 @@ import argparse
 import logging
 import os
 import time
+from typing import Any
 
 import numpy as np
 import requests
@@ -209,8 +210,8 @@ def load_ming_talker(model_path: str, device: str = "cuda"):
 
 
 def generate_speech_ming(
-    talker,
-    vae,
+    talker: Any,
+    vae: Any,
     sample: SampleInput,
 ) -> tuple[np.ndarray | None, int]:
     """Generate speech using MingOmniTalker with voice cloning.
@@ -346,6 +347,7 @@ def benchmark(args: argparse.Namespace) -> None:
             sample_id=sample.sample_id,
             target_text=sample.target_text,
         )
+        audio_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
 
         try:
             # ---- generate speech (backend-specific) ----
@@ -361,7 +363,6 @@ def benchmark(args: argparse.Namespace) -> None:
                 output.latency = latency
                 output.audio_duration = get_wav_duration(wav_bytes)
 
-                audio_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
                 with open(audio_path, "wb") as f:
                     f.write(wav_bytes)
 
@@ -380,7 +381,6 @@ def benchmark(args: argparse.Namespace) -> None:
 
                 output.audio_duration = len(waveform) / sample_rate
 
-                audio_path = os.path.join(audio_dir, f"{sample.sample_id}.wav")
                 waveform_tensor = torch.from_numpy(waveform).unsqueeze(0)
                 torchaudio.save(audio_path, waveform_tensor, sample_rate)
 
