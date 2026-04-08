@@ -80,6 +80,17 @@ class MultiVocabEmbeddings(nn.Module):
         aligned_size = 128 * ((total_vocab + 127) // 128)
         self.embeddings = nn.Embedding(aligned_size, embedding_dim)
 
+    def _rebuild_offsets(self) -> None:
+        """Recompute the per-codebook offsets buffer.
+
+        Must be called after ``to_empty()`` (meta-device init) because
+        ``register_buffer`` values are replaced with uninitialised tensors.
+        """
+        vals = [0]
+        for sz in self.codebook_sizes[:-1]:
+            vals.append(vals[-1] + sz)
+        self.offsets.copy_(torch.tensor(vals, dtype=torch.long))
+
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         # input_ids: [batch, n_codebooks, seq_len]
         shifted = input_ids + self.offsets[None, :, None]
@@ -581,6 +592,8 @@ class VoxtralTTSAudioGeneration(nn.Module):
         # Rebuild non-persistent buffers lost during meta init
         for block in model.language_model.blocks:
             block.attn.rotary_emb._materialise_cache()
+
+        model.audio_token_embedding._rebuild_offsets()
 
         at = model.acoustic_transformer
         at._timesteps = torch.linspace(0, 1, at._acoustic_decode_iters)
