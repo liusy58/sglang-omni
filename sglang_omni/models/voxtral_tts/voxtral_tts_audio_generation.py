@@ -107,7 +107,7 @@ def from_nested_dict(cls, d):
         origin = get_origin(field_type)
         if origin is Union:
             args = get_args(field_type)
-            non_none_types = [a for a in args if a is not type(None)]
+            non_none_types = [a for a in args if a is not type(None)]  # noqa: E721
             if len(non_none_types) == 1:
                 field_type = non_none_types[0]
         if is_dataclass(field_type) and isinstance(value, dict):
@@ -149,7 +149,6 @@ class BidirectionalAttention(nn.Module):
         self.args = args
         self.n_local_heads: int = args.n_heads
         self.n_local_kv_heads: int = args.n_kv_heads
-        self.repeats = self.n_local_heads
         self.layer_id = layer_id
         self.head_dim = args.head_dim
         self.wq = nn.Linear(
