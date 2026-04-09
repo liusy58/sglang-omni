@@ -55,6 +55,15 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
     tekken_path = os.path.join(checkpoint_dir, "tekken.json")
     tokenizer = MistralTokenizer.from_file(tekken_path)
 
+    from sglang_omni.models.voxtral_tts.voxtral_tts_audio_generation import (
+        SUPPORTED_LANGS,
+    )
+
+    # Pre-compile a regex that matches language tags like ``[en]``, ``[fr]``,
+    # etc.  The pattern captures the two-letter code so we can validate it
+    # against ``SUPPORTED_LANGS``.
+    _LANG_TAG_RE = re.compile(r"\[([a-z]{2})\]")
+
     def _preprocess(payload: StagePayload) -> StagePayload:
         inputs = payload.request.inputs
         params = payload.request.params or {}
@@ -68,6 +77,26 @@ def create_preprocessing_executor(model_path: str) -> PreprocessingExecutor:
             text = str(inputs) if inputs else ""
 
         tts_params = metadata.get("tts_params", {})
+
+        # --- early language validation ---
+        # Check explicit ``language`` parameter from the request.
+        explicit_lang = tts_params.get("language") or params.get("language")
+        if explicit_lang is not None and explicit_lang not in SUPPORTED_LANGS:
+            raise ValueError(
+                f"Unsupported language '{explicit_lang}'. "
+                f"Supported languages: {', '.join(sorted(SUPPORTED_LANGS))}"
+            )
+
+        # Also scan the input text for embedded language tags (e.g. ``[en]``)
+        # and reject any that are not in the supported set.
+        for match in _LANG_TAG_RE.finditer(text):
+            lang_code = match.group(1)
+            if lang_code not in SUPPORTED_LANGS:
+                raise ValueError(
+                    f"Unsupported language tag '[{lang_code}]' found in input text. "
+                    f"Supported languages: {', '.join(sorted(SUPPORTED_LANGS))}"
+                )
+
         voice = tts_params.get("voice") or params.get("voice")
         if voice is None:
             voice = "cheerful_female"
@@ -130,13 +159,13 @@ def _run_ar_generation(
 
     position_ids = torch.arange(prompt_len, device=device).unsqueeze(0)
 
-    # Prefill with per-layer debug logging
+    # Prefill
     hidden, past_kv = model.forward_llm(
         inputs_embeds=input_embeds,
         position_ids=position_ids,
         past_key_values=None,
         use_cache=True,
-        do_layer_debug=True,
+        do_layer_debug=False,
     )
 
     last_hidden = hidden[:, -1:, :]
